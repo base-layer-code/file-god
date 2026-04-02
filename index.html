@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FILE PUBLISHER - iPad Style Tags</title>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <style>
+        :root { --accent: #ff4757; --bg: #0a0a0c; --panel: #161b22; --safe: #58a6ff; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: #fff; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { width: 100%; max-width: 600px; }
+        .card { background: var(--panel); padding: 20px; border: 2px solid var(--accent); border-radius: 15px; margin-bottom: 20px; }
+        input, textarea, select { background: #0d1117; border: 1px solid #30363d; color: #fff; padding: 12px; border-radius: 8px; margin: 8px 0; width: 100%; box-sizing: border-box; }
+        .btn { background: var(--accent); color: #fff; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; transition: 0.2s; }
+        .btn-sub { background: #30363d; margin-bottom: 10px; font-size: 13px; }
+
+        /* タグ選択のスタイル */
+        .tag-select-wrap { display: flex; align-items: center; gap: 10px; margin: 5px 0; }
+        .tag-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+
+        /* リスト表示 */
+        .file-item { background: var(--panel); padding: 15px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+        .file-info { flex: 1; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+        .file-name { font-weight: bold; }
+        .del-btn { background: transparent; color: #444; border: none; font-size: 20px; cursor: pointer; padding: 5px; }
+        .del-btn:hover { color: var(--accent); }
+
+        /* モーダル */
+        #viewer { position: fixed; inset: 0; background: rgba(0,0,0,0.9); display: none; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+        .viewer-box { background: var(--panel); padding: 25px; border-radius: 15px; width: 100%; max-width: 500px; border: 2px solid var(--accent); }
+        pre { background: #000; padding: 15px; border-radius: 8px; white-space: pre-wrap; color: var(--safe); overflow-y: auto; max-height: 250px; font-size: 14px; }
+        .m-btns { display: flex; gap: 10px; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+        <h2 style="color:var(--accent); margin-top:0;">📄 FILE PUBLISHER</h2>
+        <input type="text" id="f-name" placeholder="ファイル名" oninput="saveDraft()">
+        
+        <input type="file" id="load-file" style="display:none" onchange="loadFile(event)">
+        <button class="btn btn-sub" onclick="document.getElementById('load-file').click()">📂 ファイル読み込み</button>
+
+        <textarea id="f-content" rows="5" placeholder="内容を入力..." oninput="saveDraft()"></textarea>
+        
+        <div class="tag-select-wrap">
+            <span>タグ:</span>
+            <select id="f-tag" style="margin:0; flex:1;" onchange="saveDraft()">
+                <option value="">なし</option>
+                <option value="#ff3b30">レッド</option>
+                <option value="#ff9500">オレンジ</option>
+                <option value="#ffcc00">イエロー</option>
+                <option value="#34c759">グリーン</option>
+                <option value="#007aff">ブルー</option>
+                <option value="#5856d6">パープル</option>
+                <option value="#8e8e93">グレー</option>
+            </select>
+        </div>
+
+        <input type="password" id="f-pass" placeholder="パスワード (任意)" oninput="saveDraft()">
+        <button class="btn" onclick="publish()">サーバーに公開する</button>
+    </div>
+
+    <div id="file-list">読み込み中...</div>
+</div>
+
+<div id="viewer">
+    <div class="viewer-box">
+        <h3 id="v-title" style="color:var(--accent); margin-top:0;"></h3>
+        <pre id="v-body"></pre>
+        <div class="m-btns">
+            <button class="btn" style="background:var(--safe); color:#000;" onclick="copyTxt()">コピー</button>
+            <button class="btn" style="background:#fff; color:#000;" onclick="dlTxt()">保存</button>
+            <button class="btn" style="background:#555;" onclick="closeV()">閉じる</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ９マス鬼ごっこの設定
+const firebaseConfig = {
+    apiKey: "AIzaSyAfjTWeL71syzo7SNpym7ATcbrq6i7JfXQ",
+    authDomain: "game-server-df061.firebaseapp.com",
+    databaseURL: "https://game-server-df061-default-rtdb.firebaseio.com",
+    projectId: "game-server-df061",
+    storageBucket: "game-server-df061.firebasestorage.app",
+    messagingSenderId: "475396427934",
+    appId: "1:475396427934:web:5106a6210aa51e3b8f6b8f"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const dbPath = "tag_rooms";
+
+window.onload = () => {
+    loadDraft();
+    firebase.auth().signInAnonymously().then(() => listen());
+};
+
+// オートセーブ
+function saveDraft() {
+    const d = { 
+        n: document.getElementById('f-name').value, 
+        c: document.getElementById('f-content').value, 
+        p: document.getElementById('f-pass').value,
+        t: document.getElementById('f-tag').value
+    };
+    localStorage.setItem('file_pub_v3', JSON.stringify(d));
+}
+function loadDraft() {
+    const s = localStorage.getItem('file_pub_v3');
+    if(s) {
+        const d = JSON.parse(s);
+        document.getElementById('f-name').value = d.n || "";
+        document.getElementById('f-content').value = d.c || "";
+        document.getElementById('f-pass').value = d.p || "";
+        document.getElementById('f-tag').value = d.t || "";
+    }
+}
+
+// ファイル読み込み
+function loadFile(e) {
+    const f = e.target.files[0];
+    if(!f) return;
+    const r = new FileReader();
+    r.onload = (ev) => {
+        document.getElementById('f-content').value = ev.target.result;
+        if(!document.getElementById('f-name').value) document.getElementById('f-name').value = f.name;
+        saveDraft();
+    };
+    r.readAsText(f);
+}
+
+// 公開
+function publish() {
+    const n = document.getElementById('f-name').value.trim();
+    const c = document.getElementById('f-content').value.trim();
+    const p = document.getElementById('f-pass').value;
+    const t = document.getElementById('f-tag').value;
+    if(!n || !c) return alert("名前と内容を入力してください");
+
+    const id = "fpub_" + Date.now();
+    db.ref(`${dbPath}/${id}`).set({
+        name: n, content: c, pass: p || null, tag: t || null,
+        type: "file_v3", time: Date.now()
+    }).then(() => {
+        alert("公開しました！");
+        localStorage.removeItem('file_pub_v3');
+        location.reload();
+    });
+}
+
+// 削除機能 (2段階)
+function delFile(id, correctPass) {
+    if(correctPass) {
+        const input = prompt("削除用パスワードを入力してください");
+        if(input !== correctPass) return alert("パスワードが違います");
+    }
+    if(confirm("本当に削除しますか？")) {
+        if(confirm("【最終確認】この操作は取り消せません。削除しますか？")) {
+            db.ref(`${dbPath}/${id}`).remove().then(() => alert("削除しました"));
+        }
+    }
+}
+
+// リスト表示
+function listen() {
+    db.ref(dbPath).on('value', snap => {
+        const list = document.getElementById('file-list');
+        list.innerHTML = "";
+        const data = snap.val();
+        if(!data) return list.innerText = "なし";
+
+        Object.keys(data).reverse().forEach(k => {
+            const f = data[k];
+            if(f.type !== "file_v3") return;
+
+            const div = document.createElement('div');
+            div.className = "file-item";
+            
+            // iPad風タグドットの生成
+            const tagHtml = f.tag ? `<span class="tag-dot" style="background:${f.tag}"></span>` : '';
+            const lockHtml = f.pass ? '🔒 ' : '';
+
+            div.innerHTML = `
+                <div class="file-info">
+                    ${tagHtml}
+                    <span class="file-name">${lockHtml}${f.name}</span>
+                </div>
+                <button class="del-btn">×</button>
+            `;
+            
+            div.querySelector('.file-info').onclick = () => openV(f);
+            div.querySelector('.del-btn').onclick = (e) => {
+                e.stopPropagation();
+                delFile(k, f.pass);
+            };
+            list.appendChild(div);
+        });
+    });
+}
+
+// モーダル
+let cur = null;
+function openV(f) {
+    if(f.pass) {
+        if(prompt("パスワードを入力してください") !== f.pass) return alert("パスワードが違います");
+    }
+    cur = f;
+    document.getElementById('v-title').innerText = f.name;
+    document.getElementById('v-body').innerText = f.content;
+    document.getElementById('viewer').style.display = 'flex';
+}
+function closeV() { document.getElementById('viewer').style.display = 'none'; }
+function copyTxt() { navigator.clipboard.writeText(cur.content).then(() => alert("コピーしました！")); }
+function dlTxt() {
+    const b = new Blob([cur.content], {type:'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = cur.name + ".txt";
+    a.click();
+}
+</script>
+</body>
+</html>
